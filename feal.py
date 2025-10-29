@@ -1,277 +1,246 @@
-#!/usr/bin/env python3
-"""
-FEAL-3 (учебная реализация) + ECB wrapper + BMP24-aware file encrypt/decrypt
+from typing import Tuple
+import sys
+import argparse
 
-Назначение:
- - encrypt_block(data_block, key) / decrypt_block(...)
- - ecb_encrypt_stream(bytes, key) / ecb_decrypt_stream(...)
- - bmp_encrypt_file(input_path, output_path, key_path_or_bytes, mode='encrypt'|'decrypt')
- - key generation / save / load
+BLOCK_SIZE = 8  # FEAL блок 64 бита = 8 байт
 
-Примечание:
- - Рабочий блочный размер: 8 байт (64 бита).
- - Ключ: 8 байт (64 бита).
- - Для файлов (общих): PKCS#7-подобная дополняющая схема до 8 байт.
- - Для BMP: сохраняется заголовок (читаю смещение пиксельных данных в заголовке BMP).
- - Это учебная реализация FEAL-3 (не для продакшн-шифрования).
-"""
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    return bytes(x ^ y for x, y in zip(a, b))
 
-import struct
-import secrets
-
-BLOCK_SIZE = 8  # 64-bit block
-
-# ---------------------------
-# Утилиты упаковки/распаковки
-# ---------------------------
-def _u64(b: bytes) -> int:
-    return int.from_bytes(b, byteorder='big')
-
-def _u32(n: int) -> int:
-    return n & 0xFFFFFFFF
-
-def _to_bytes_u64(n: int) -> bytes:
-    return n.to_bytes(8, byteorder='big')
-
-# ---------------------------
-# Небольшая "F" функция и вспомогательные
-# Учебная вариация FEAL-like F
-# ---------------------------
-def _rol32(x: int, r: int) -> int:
-    return _u32(((x << r) & 0xFFFFFFFF) | (x >> (32 - r)))
-
-def _f_function(r32: int, k32: int) -> int:
-    """
-    Небольшая нелинейная функция F для учебного FEAL-3.
-    Входы: 32-битный раундовый вход r32, 32-битный подключ k32.
-    Выход: 32-бит.
-    Описание (учебное):
-      t = (r32 + k32) mod 2^32
-      затем последовательные нелинейные преобразования с вращениями и XOR.
-    """
-    t = _u32(r32 + k32)
-    # разложим на байты и проведём простую нелинейность
-    b0 = (t >> 24) & 0xFF
-    b1 = (t >> 16) & 0xFF
-    b2 = (t >> 8)  & 0xFF
-    b3 = t & 0xFF
-
-    # простые S-подстановки (учебные)
-    def s(x):
-        # 8-bit non-linear op: rotate-left 2 and xor with (x<<1)
-        return (( ((x << 2) & 0xFF) | (x >> 6) ) ^ ((x << 1) & 0xFF)) & 0xFF
-
-    b0 = s(b0)
-    b1 = s(b1 ^ b0)
-    b2 = s(b2 ^ b1)
-    b3 = s(b3 ^ b2)
-
-    out = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    # ещё один финальный оборот
-    out = _rol32(out ^ 0xA5A5A5A5, 3)
-    return out
-
-# ---------------------------
-# Key schedule для FEAL-3 (учебный)
-# Возвращает список 4 32-битных раундовых ключей (K1..K4) для трёх раундов + возможное горячее K0
-# ---------------------------
-def key_schedule_feal3(key8: bytes):
-    if len(key8) != 8:
-        raise ValueError("Key must be 8 bytes (64 bits)")
-    # Разложим ключ на две 32-битные части
-    k_high = int.from_bytes(key8[:4], 'big')
-    k_low  = int.from_bytes(key8[4:], 'big')
-    # Генерируем простые подключи: K1..K4
-    K = []
-    K.append(_u32(k_high ^ _rol32(k_low, 8) ^ 0x0F0F0F0F))
-    K.append(_u32(k_low  ^ _rol32(k_high, 5) ^ 0x33333333))
-    K.append(_u32(K[0] ^ _rol32(K[1], 7) ^ 0x55555555))
-    K.append(_u32(K[1] ^ _rol32(K[0], 3) ^ 0x99999999))
-    # для FEAL-3 хватит K[0:3] (K1..K3) но используем 4 элемента для финальной обработки
-    return K  # list of 4 32-bit ints
-
-# ---------------------------
-# Блочная шифровка (FEAL-3 учебный)
-# ---------------------------
-def encrypt_block(block8: bytes, key8: bytes) -> bytes:
-    if len(block8) != 8:
-        raise ValueError("Block must be 8 bytes")
-    L = int.from_bytes(block8[:4], 'big')
-    R = int.from_bytes(block8[4:], 'big')
-    Ks = key_schedule_feal3(key8)
-
-    # FEAL-3: 3 раунда
-    for i in range(3):
-        # round: L, R = R, L ^ F(R, K_i)
-        Fout = _f_function(R, Ks[i])
-        L, R = R, _u32(L ^ Fout)
-
-    # финальная перестановка (swap)
-    out = (R.to_bytes(4, 'big') + L.to_bytes(4, 'big'))
-    return out
-
-
-
-def decrypt_block(block8: bytes, key8: bytes) -> bytes:
-    if len(block8) != 8:
-        raise ValueError("Block must be 8 bytes")
-    # обратный процесс к тому, что делали в encrypt_block
-    # при encrypt мы в конце вернули R||L (после трёх раундов с swap)
-    # при дешифровании нужно повторить раунды в обратном порядке.
-    R = int.from_bytes(block8[:4], 'big')
-    L = int.from_bytes(block8[4:], 'big')
-    Ks = key_schedule_feal3(key8)
-
-    # обратные раунды: инвертируем 3 раунда в обратном порядке
-    # если в шифровании было: for i=0..2: (L,R) = (R, L ^ F(R, K_i))
-    # то инверсия (в обратном порядке) будет:
-    for i in reversed(range(3)):
-        # текущие L,R соответствуют состоянию после swap в encrypt, но инвариант тот же
-        # обратная итерация:
-        # были: L_new = R_old
-        #       R_new = L_old ^ F(R_old, K_i)
-        # значит: R_old = L_new
-        #        L_old = R_new ^ F(R_old, K_i) = R_new ^ F(L_new, K_i)
-        # после инверсии присвоим:
-        R_old = L
-        L_old = _u32(R ^ _f_function(R_old, Ks[i]))
-        L, R = L_old, R_old
-
-    # теперь L,R это исходные L,R; вернуть L||R
-    return (L.to_bytes(4, 'big') + R.to_bytes(4, 'big'))
-
-# ---------------------------
-# ECB для байтовых потоков
-# ---------------------------
-def pkcs7_pad(data: bytes, block_size: int = BLOCK_SIZE) -> bytes:
+def pkcs7_pad(data: bytes, block_size: int) -> bytes:
     pad_len = block_size - (len(data) % block_size)
     if pad_len == 0:
         pad_len = block_size
-    return data + bytes([pad_len]) * pad_len
+    return data + bytes([pad_len] * pad_len)
 
-def pkcs7_unpad(data: bytes) -> bytes:
-    if not data:
-        return data
+def pkcs7_unpad(data: bytes, block_size: int) -> bytes:
+    if not data or len(data) % block_size != 0:
+        raise ValueError("Некорректный паддинг (длина не кратна размеру блока).")
     pad_len = data[-1]
-    if pad_len < 1 or pad_len > BLOCK_SIZE:
-        raise ValueError("Invalid padding")
+    if pad_len < 1 or pad_len > block_size:
+        raise ValueError("Неверный PKCS#7 паддинг.")
     if data[-pad_len:] != bytes([pad_len]) * pad_len:
-        raise ValueError("Invalid padding bytes")
+        raise ValueError("Неверный PKCS#7 паддинг.")
     return data[:-pad_len]
 
-def ecb_encrypt_stream(plaintext: bytes, key8: bytes) -> bytes:
-    data = pkcs7_pad(plaintext, BLOCK_SIZE)
+def rol8(x: int, n: int) -> int:
+    return ((x << n) & 0xFF) | ((x & 0xFF) >> (8 - n))
+
+def f_box(a: int, b: int) -> Tuple[int,int]:
+    """
+    Малые преобразования, использующиеся в FEAL.
+    Это элементарная 8-бит функция, используемая в вариантах FEAL.
+    Возвращает пару байт.
+    """
+    x = (a + b) & 0xFF
+    y = rol8(a ^ b, 2)
+    return x, y
+
+def feal_round_function(x_bytes: bytes, k_bytes: bytes) -> bytes:
+    """
+    Функция F для раунда:
+    - x_bytes: 4 байта (левый/правый 32-бита разбитые по байтам)
+    - k_bytes: 4 байта раундового ключа
+    Возвращает 4 байта, результат F.
+    """
+
+    # Разбиваем на байты
+    x = list(x_bytes)
+    k = list(k_bytes)
+
+    # Пример последовательности операций (упрощённая, но рабочая)
+    # Это учебная конструкция, повторяющая логику FEAL-4.
+    a0 = x[0] ^ k[0]
+    a1 = x[1] ^ k[1]
+    a2 = x[2] ^ k[2]
+    a3 = x[3] ^ k[3]
+
+    # парные преобразования
+    t0, t1 = f_box(a0, a1)
+    t2, t3 = f_box(a2, a3)
+
+    # смешивание
+    r0 = t0 ^ t2
+    r1 = t1 ^ t3
+    r2 = (t2 + t0) & 0xFF
+    r3 = (t3 + t1) & 0xFF
+
+    return bytes([r0, r1, r2, r3])
+
+def key_schedule(key: bytes, rounds: int = 4) -> list:
+    """
+    Простая генерация раундовых ключей из 8-байтного ключа.
+    Возвращает список раундовых ключей (по 4 байта каждый).
+    В FEAL на практике ключевое расписание сложнее; здесь учебная версия.
+    """
+    if len(key) != 8:
+        raise ValueError("Ключ должен быть 8 байт (64 бита) для этой реализации.")
+    k = list(key)
+    subkeys = []
+    # Простая генерация — комбинируем байты и слегка трансформируем
+    
+    for i in range(rounds + 1):  # +1 иногда нужен для финального шага
+        # генерируем 4-байтный ключ для раунда i
+        s0 = (k[0] + i + k[4]) & 0xFF
+        s1 = (k[1] ^ (i*3) ^ k[5]) & 0xFF
+        s2 = (k[2] + (i*5) + k[6]) & 0xFF
+        s3 = (k[3] ^ (i*7) ^ k[7]) & 0xFF
+        subkeys.append(bytes([s0, s1, s2, s3]))
+        
+        # немного трансформируем ключ для следующей итерации
+        k = [rol8(x ^ i, (i % 7) + 1) for x in k]
+    return subkeys
+
+def feal_encrypt_block(block: bytes, key: bytes) -> bytes:
+    """Зашифровать 8-байтный блок (FEAL-4 учебная версия)."""
+    if len(block) != BLOCK_SIZE:
+        raise ValueError("Блок должен быть 8 байт.")
+    subkeys = key_schedule(key, rounds=4)
+    
+    # Разбиваем 64 бита на 2 слова по 4 байта
+    L = block[:4]
+    R = block[4:]
+    
+    # 4 раунда (FEAL-4)
+    for r in range(4):
+        Fout = feal_round_function(R, subkeys[r])
+        # L' = R
+        L, R = R, bytes(x ^ y for x, y in zip(L, Fout))
+    
+    # финальная перестановка
+    cipher = R + L
+    return cipher
+
+def feal_decrypt_block(block: bytes, key: bytes) -> bytes:
+    """Дешифровать 8-байтный блок (обратная операция к feal_encrypt_block)."""
+    if len(block) != BLOCK_SIZE:
+        raise ValueError("Блок должен быть 8 байт.")
+    subkeys = key_schedule(key, rounds=4)
+    
+    # обратим финальную перестановку
+    R = block[:4]
+    L = block[4:]
+    
+    # обратные раунды
+    for r in reversed(range(4)):
+        Fout = feal_round_function(L, subkeys[r])
+        newR = bytes(x ^ y for x, y in zip(R, Fout))
+        R, L = L, newR
+    plain = L + R
+    return plain
+
+# ---------------------------
+#        Режим ECB 
+# ---------------------------
+def ecb_encrypt_stream(plaintext: bytes, key: bytes) -> bytes:
+    padded = pkcs7_pad(plaintext, BLOCK_SIZE)
     out = bytearray()
-    for i in range(0, len(data), BLOCK_SIZE):
-        out.extend(encrypt_block(data[i:i+BLOCK_SIZE], key8))
+    for i in range(0, len(padded), BLOCK_SIZE):
+        block = padded[i:i+BLOCK_SIZE]
+        out.extend(feal_encrypt_block(block, key))
     return bytes(out)
 
-def ecb_decrypt_stream(ciphertext: bytes, key8: bytes) -> bytes:
+def ecb_decrypt_stream(ciphertext: bytes, key: bytes) -> bytes:
     if len(ciphertext) % BLOCK_SIZE != 0:
-        raise ValueError("Ciphertext length must be multiple of block size")
+        raise ValueError("Длина шифртекста не кратна размеру блока.")
     out = bytearray()
     for i in range(0, len(ciphertext), BLOCK_SIZE):
-        out.extend(decrypt_block(ciphertext[i:i+BLOCK_SIZE], key8))
-    pt = pkcs7_unpad(bytes(out))
-    return pt
+        block = ciphertext[i:i+BLOCK_SIZE]
+        out.extend(feal_decrypt_block(block, key))
+    return pkcs7_unpad(bytes(out), BLOCK_SIZE)
 
 # ---------------------------
-# Генерация/сохранение/загрузка ключа
+#       Работа с BMP24
 # ---------------------------
-def generate_key_random() -> bytes:
-    return secrets.token_bytes(8)
+BMP_HEADER_SIZE = 54
 
-def save_key_to_file(key8: bytes, path: str):
-    with open(path, 'wb') as f:
-        f.write(key8)
+def encrypt_bmp24_file(in_path: str, out_path: str, key: bytes):
+    with open(in_path, "rb") as f:
+        all_data = f.read()
+    if len(all_data) < BMP_HEADER_SIZE:
+        raise ValueError("Файл слишком мал, чтобы быть BMP.")
+    header = all_data[:BMP_HEADER_SIZE]
+    body = all_data[BMP_HEADER_SIZE:]
+    encrypted_body = ecb_encrypt_stream(body, key)
+    with open(out_path, "wb") as f:
+        f.write(header + encrypted_body)
+    print(f"Зашифровано BMP24 -> {out_path}")
 
-def load_key_from_file(path: str) -> bytes:
-    with open(path, 'rb') as f:
-        b = f.read()
-    if len(b) != 8:
-        raise ValueError("Key file must contain exactly 8 bytes")
-    return b
-
-# ---------------------------
-# BMP24-aware file encrypt/decrypt
-# ---------------------------
-def bmp_encrypt_file(in_path: str, out_path: str, key8: bytes, mode: str = 'encrypt'):
-    """
-    Если файл - BMP, читаем offset пиксельных данных из заголовка (байты 10..13 LITTLE-ENDIAN).
-    Сохраняем всё до offset как есть; шифруем/дешифруем только пиксельные данные.
-    Если файл не похож на BMP (не начинается с 'BM'), можно просто шифровать весь файл.
-    """
-    with open(in_path, 'rb') as f:
-        allb = f.read()
-
-    if len(allb) < 54:
-        raise ValueError("File too small to be BMP or to contain BMP header")
-
-    if allb[:2] == b'BM':
-        # BMP: offset to pixel data at bytes 10..13 (little-endian)
-        pixel_offset = struct.unpack_from('<I', allb, 10)[0]
-        header = allb[:pixel_offset]
-        pixel_bytes = allb[pixel_offset:]
-        # Шифруем/дешифруем pixel_bytes в ECB; при шифровании используем PKCS7,
-        # но в BMP полезно чтобы размер данных оставался кратным 4 для выравнивания строк.
-        # Мы используем PKCS#7 — при расшифровке восстановим исходные данные.
-        if mode == 'encrypt':
-            out_pixels = ecb_encrypt_stream(pixel_bytes, key8)
-        elif mode == 'decrypt':
-            out_pixels = ecb_decrypt_stream(pixel_bytes, key8)
-        else:
-            raise ValueError("mode must be 'encrypt' or 'decrypt'")
-        with open(out_path, 'wb') as f:
-            f.write(header + out_pixels)
-    else:
-        # не BMP: шифруем весь поток
-        if mode == 'encrypt':
-            outb = ecb_encrypt_stream(allb, key8)
-        else:
-            outb = ecb_decrypt_stream(allb, key8)
-        with open(out_path, 'wb') as f:
-            f.write(outb)
+def decrypt_bmp24_file(in_path: str, out_path: str, key: bytes):
+    with open(in_path, "rb") as f:
+        all_data = f.read()
+    if len(all_data) < BMP_HEADER_SIZE:
+        raise ValueError("Файл слишком мал, чтобы быть BMP.")
+    header = all_data[:BMP_HEADER_SIZE]
+    body = all_data[BMP_HEADER_SIZE:]
+    decrypted_body = ecb_decrypt_stream(body, key)
+    with open(out_path, "wb") as f:
+        f.write(header + decrypted_body)
+    print(f"Дешифровано BMP24 -> {out_path}")
 
 # ---------------------------
-# Командная оболочка (CLI)
+# Работа с произвольным файлом (шифровать все байты)
 # ---------------------------
-def print_usage():
-    print("FEAL-3 ECB (учебная реализация)")
-    print("Использование:")
-    print("  python feal3_ecb.py genkey keyfile")
-    print("  python feal3_ecb.py encrypt infile outfile keyfile [--bmp]")
-    print("  python feal3_ecb.py decrypt infile outfile keyfile [--bmp]")
-    print("")
-    print("Если указан --bmp (или файл имеет сигнатуру BM), то сохраняется заголовок BMP и шифруются только пиксельные данные.")
-    print("Ключ — 8 байт (64 бита).")
+def encrypt_file_any(in_path: str, out_path: str, key: bytes):
+    with open(in_path, "rb") as f:
+        data = f.read()
+    enc = ecb_encrypt_stream(data, key)
+    with open(out_path, "wb") as f:
+        f.write(enc)
+    print(f"Зашифровано -> {out_path}")
 
-def main_cli(argv):
-    import sys
-    if len(argv) < 2:
-        print_usage(); return
-    cmd = argv[1].lower()
-    if cmd == 'genkey':
-        if len(argv) < 3:
-            print("Укажите файл для сохранения ключа"); return
-        key = generate_key_random()
-        save_key_to_file(key, argv[2])
-        print(f"Ключ сгенерирован и сохранён в {argv[2]}")
-    elif cmd in ('encrypt', 'decrypt'):
-        if len(argv) < 5:
-            print_usage(); return
-        infile = argv[2]; outfile = argv[3]; keyfile = argv[4]
-        key = load_key_from_file(keyfile)
-        mode = 'encrypt' if cmd == 'encrypt' else 'decrypt'
-        # detect --bmp flag or automatic BMP detection inside function
+def decrypt_file_any(in_path: str, out_path: str, key: bytes):
+    with open(in_path, "rb") as f:
+        data = f.read()
+    dec = ecb_decrypt_stream(data, key)
+    with open(out_path, "wb") as f:
+        f.write(dec)
+    print(f"Дешифровано -> {out_path}")
+
+# ---------------------------
+# CLI 
+# ---------------------------
+def parse_hex_key(s: str) -> bytes:
+    s = s.strip()
+    if len(s) != 16:
+        raise ValueError("Ожидается 16 hex-символов (8 байт).")
+    return bytes.fromhex(s)
+
+def interactive_menu():
+    while True:
+        print("\nВыберите режим:")
+        print("1 - Зашифровать файл")
+        print("2 - Дешифровать файл")
+        print("3 - Выход")
+        choice = input(">> ").strip()
+        if choice == "3":
+            print("Выход.")
+            break
+        if choice not in ("1", "2"):
+            print("Неверный выбор.")
+            continue
+        in_path = input("Путь к входному файлу: ").strip()
+        out_path = input("Путь к выходному файлу: ").strip()
+        bmp_mode = input("Файл BMP24? (y/n): ").strip().lower().startswith("y")
+        key_hex = input("Ключ (16 hex символов, 8 байт): ").strip()
         try:
-            bmp_encrypt_file(infile, outfile, key, mode=mode)
-            print(f"{mode.capitalize()}ion done: {infile} -> {outfile}")
+            key = parse_hex_key(key_hex)
         except Exception as e:
-            print("Ошибка:", e)
-    else:
-        print_usage()
+            print("Ошибка ключа:", e)
+            continue
+        try:
+            if choice == "1":
+                if bmp_mode:
+                    encrypt_bmp24_file(in_path, out_path, key)
+                else:
+                    encrypt_file_any(in_path, out_path, key)
+            else:
+                if bmp_mode:
+                    decrypt_bmp24_file(in_path, out_path, key)
+                else:
+                    decrypt_file_any(in_path, out_path, key)
+        except Exception as e:
+            print("Ошибка при обработке файла:", e)
 
-if __name__ == '__main__':
-    import sys
-    main_cli(sys.argv)
-
+if __name__ == "__main__":
+    interactive_menu()
