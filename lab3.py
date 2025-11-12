@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 FEAL implementation + статистические тесты над битовой последовательностью
-Добавлены тесты:
- 1. Частотный (однобитный)
- 2. Последовательный (двубитный)
- 3. Покер-тест
- 4. Тест серий (runs)
- 5. Автокорреляционный тест
+(версия с анализом BMP-файлов и интерпретацией: пройден / не пройден)
 
-Также добавлена простая таблица критических значений распределения хи-квадрат
-и функция подбора наиболее близкой степени свободы и уровня значимости.
+Функции шифрования/дешифрования FEAL и режимы ECB/OFB оставлены из исходного кода.
+Новые возможности:
+ - analyze_block_stats(block, autocorr_d=1)  - тесты для произвольной битовой последовательности (блок/последовательность байтов)
+ - analyze_bmp24(path, autocorr_d=1) - чтение BMP (без заголовка) и запуск тестов на всем теле
+ - encrypt_bmp24_ecb/_ofb теперь по умолчанию выполняют анализ зашифрованного файла и печатают результат
 
-Пример использования внизу файла.
+Пример использования приведён внизу.
 """
 from typing import Tuple, List, Dict
 from PIL import Image  # pip install pillow
@@ -170,7 +168,7 @@ def ofb_decrypt_stream(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
 # ------------------ Файловые обёртки для BMP24 ------------------
 BMP_HEADER_SIZE = 54
 
-def encrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes):
+def encrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes, analyze_after: bool = True):
     with open(in_path, "rb") as f:
         all_data = f.read()
     if len(all_data) < BMP_HEADER_SIZE:
@@ -181,6 +179,10 @@ def encrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes):
     with open(out_path, "wb") as f:
         f.write(header + encrypted_body)
     print(f"Зашифровано BMP24 (ECB) -> {out_path}")
+    if analyze_after:
+        print('
+Авто-анализ зашифрованного файла:')
+        analyze_bmp24(out_path)
 
 
 def decrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes):
@@ -196,7 +198,7 @@ def decrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes):
     print(f"Дешифровано BMP24 (ECB) -> {out_path}")
 
 
-def encrypt_bmp24_ofb(in_path: str, out_path: str, key: bytes, iv: bytes):
+def encrypt_bmp24_ofb(in_path: str, out_path: str, key: bytes, iv: bytes, analyze_after: bool = True):
     with open(in_path, "rb") as f:
         all_data = f.read()
     if len(all_data) < BMP_HEADER_SIZE:
@@ -207,9 +209,14 @@ def encrypt_bmp24_ofb(in_path: str, out_path: str, key: bytes, iv: bytes):
     with open(out_path, "wb") as f:
         f.write(header + encrypted_body)
     print(f"Зашифровано BMP24 (OFB) -> {out_path}")
+    if analyze_after:
+        print('
+Авто-анализ зашифрованного файла:')
+        analyze_bmp24(out_path)
 
 
 def decrypt_bmp24_ofb(in_path: str, out_path: str, key: bytes, iv: bytes):
+    # decrypt == encrypt
     with open(in_path, "rb") as f:
         all_data = f.read()
     if len(all_data) < BMP_HEADER_SIZE:
@@ -262,11 +269,14 @@ def serial_test(bits: List[int]) -> Dict[str, float]:
 
 def choose_m_for_poker(n: int) -> int:
     # выбираем наибольшее m>=1 такое, что floor(n/m) >= 5 * 2^m
-    for m in range(1, max(1, int(math.log2(n)) + 2)):
+    m = 1
+    while True:
         k = n // m
         if k < 5 * (2 ** m):
-            return m - 1 if m > 1 else 1
-    return 1
+            return max(1, m-1)
+        m += 1
+        if m > 20:
+            return max(1, m-1)
 
 
 def poker_test(bits: List[int], m: int = None) -> Dict[str, float]:
@@ -322,14 +332,14 @@ def runs_test(bits: List[int]) -> Dict[str, float]:
     else:
         runs_one.append(length)
     # ожидаемое число e_i
-    max_i = 1
     e_i_list = {}
+    i = 1
     while True:
-        e_i = (n - max_i + 3) / (2 ** (max_i + 2))
+        e_i = (n - i + 3) / (2 ** (i + 2))
         if e_i < 5:
             break
-        e_i_list[max_i] = e_i
-        max_i += 1
+        e_i_list[i] = e_i
+        i += 1
     k = max(e_i_list.keys()) if e_i_list else 0
     B = {i:0 for i in range(1, k+1)}
     G = {i:0 for i in range(1, k+1)}
@@ -360,8 +370,6 @@ def autocorrelation_test(bits: List[int], d: int) -> Dict[str, float]:
     return {'n': n, 'd': d, 'A': A, 'X5': X5}
 
 # ------------------ Таблица хи-квадрат (часто используемые точки) ------------------
-# Критические значения (верхний хвост) для alpha = 0.10, 0.05, 0.01, 0.001
-# df 1..20
 CHI2_CRIT = {
     1: {0.10: 2.70554, 0.05: 3.84146, 0.01: 6.63490, 0.001: 10.8276},
     2: {0.10: 4.6052,  0.05: 5.99146, 0.01: 9.21034, 0.001: 13.8155},
@@ -387,9 +395,6 @@ CHI2_CRIT = {
 
 
 def find_closest_chi2(value: float) -> Dict[str, object]:
-    """Для заданного значения statistic ищем наиболее близкую пару (df, alpha)
-       в табличных критических значениях (по абсолютной разнице).
-    """
     best = {'df': None, 'alpha': None, 'crit': None, 'diff': float('inf')}
     for df, alts in CHI2_CRIT.items():
         for alpha, crit in alts.items():
@@ -398,11 +403,12 @@ def find_closest_chi2(value: float) -> Dict[str, object]:
                 best = {'df': df, 'alpha': alpha, 'crit': crit, 'diff': d}
     return best
 
+# Вспомогательная функция для нормального распределения (Phi)
+def normal_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
 
 def analyze_block_stats(block: bytes, autocorr_d: int = 1) -> Dict[str, object]:
-    """Принимает 8-байтовый (или произвольный) блок и считает все тесты.
-       Возвращает словарь с результатами и рекомендациями по chi2.
-    """
     bits = bytes_to_bitlist(block)
     results = {}
     results['freq'] = freq_test(bits)
@@ -412,35 +418,109 @@ def analyze_block_stats(block: bytes, autocorr_d: int = 1) -> Dict[str, object]:
     results['runs'] = runs_test(bits)
     results['autocorr'] = autocorrelation_test(bits, autocorr_d)
 
-    # Подбор наиболее близкой хи-квадрат критической точки для X1..X4
-    # Для X1,X2,X3,X4 используем таблицу хи-квадрат; для X5 — это z-подобная метрика
+    # Подбор наиболее близкой хи-квадрат точки и pass/fail для X1..X4
     for name, key in [('X1', ('freq', 'X1')),
                       ('X2', ('serial', 'X2')),
                       ('X3', ('poker', 'X3')),
                       ('X4', ('runs', 'X4'))]:
         val = results[key[0]][key[1]]
+        clos = find_closest_chi2(val)
+        # pass если статистика меньше критического (т.е. не отвергаем H0 в верхнем хвосте)
+        passed = False
         try:
-            clos = find_closest_chi2(val)
+            passed = val < clos['crit']
         except Exception:
-            clos = None
+            passed = False
         results[name + '_chi2_match'] = clos
+        results[name + '_pass'] = passed
 
-    # Для автокорреляции просто возвращаем X5 и указываем, что это z-подобная метрика
-    results['X5_info'] = {'X5': results['autocorr']['X5'], 'note': 'X5 — нормированная (z-like) метрика, не хи-квадрат.'}
+    # Для автокорреляции рассчитываем p-value по нормальному приближению и делаем pass по alpha=0.05
+    X5 = results['autocorr']['X5']
+    if math.isnan(X5):
+        p = float('nan')
+    else:
+        z = abs(X5)
+        p = 2.0 * (1.0 - normal_cdf(z))
+    results['X5_info'] = {'X5': X5, 'p_value': p, 'pass_alpha_0.05': (p > 0.05 if not math.isnan(p) else False)}
     return results
+
+# ------------------ Функции анализа BMP ------------------
+
+def analyze_bmp24(path: str, autocorr_d: int = 5) -> Dict[str, object]:
+    """Считывает BMP-файл (игнорирует 54-байтный заголовок) и выполняет все тесты
+       на полном теле файла. Выводит краткую интерпретацию: пройден / не пройден.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    with open(path, 'rb') as f:
+        all_data = f.read()
+    if len(all_data) < BMP_HEADER_SIZE:
+        raise ValueError('Файл слишком мал, чтобы быть BMP.')
+    body = all_data[BMP_HEADER_SIZE:]
+    bits = bytes_to_bitlist(body)
+    # объединяем в байтовую последовательность для analyze_block_stats
+    seq_bytes = bytes(body)
+    res = analyze_block_stats(seq_bytes, autocorr_d=autocorr_d)
+
+    # Печать интерпретации
+    print('
+Результаты статистических тестов для файла:', path)
+    # X1..X4
+    for label, key in [('Частотный (X1)', 'X1'),
+                       ('Последовательный (X2)', 'X2'),
+                       ('Покер (X3)', 'X3'),
+                       ('Серии (X4)', 'X4')]:
+        val = res[label.split()[0].lower() if False else key + '_notused'] if False else None
+        # возьмём значение напрямую из структуры
+        if key == 'X1':
+            stat = res['freq']['X1']
+            match = res['X1_chi2_match']
+            passed = res['X1_pass']
+        elif key == 'X2':
+            stat = res['serial']['X2']
+            match = res['X2_chi2_match']
+            passed = res['X2_pass']
+        elif key == 'X3':
+            stat = res['poker']['X3']
+            match = res['X3_chi2_match']
+            passed = res['X3_pass']
+        else:
+            stat = res['runs']['X4']
+            match = res['X4_chi2_match']
+            passed = res['X4_pass']
+        sym = '✓' if passed else '✗'
+        print(f"[{sym}] {label}: {stat:.5g}  (closest χ²: df={match['df']}, α={match['alpha']}, crit={match['crit']})")
+
+    # X5
+    X5 = res['autocorr']['X5']
+    p = res['X5_info']['p_value']
+    pass5 = res['X5_info']['pass_alpha_0.05']
+    sym5 = '✓' if pass5 else '✗'
+    print(f"[{sym5}] Автокорреляция (d={res['autocorr']['d']}): X5={X5:.5g}, p≈{p:.5g} (pass if p>0.05)")
+
+    return res
 
 # ------------------ Пример использования ------------------
 if __name__ == '__main__':
-    # демонстрация: шифруем случайный 8-байтовый блок и запускаем тесты
+    # демонстрация: шифруем случайный BMP-like тело и запускаем тесты
     key = bytes(random.getrandbits(8) for _ in range(8))
-    plain_block = bytes(random.getrandbits(8) for _ in range(8))
-    cipher_block = feal_encrypt_block(plain_block, key)
-    print('plain:', plain_block.hex())
-    print('cipher:', cipher_block.hex())
+    # создадим временный BMP с случайными пикселями (заголовок 54 байта + тело)
+    header = bytes([0]*BMP_HEADER_SIZE)
+    body = bytes(random.getrandbits(8) for _ in range(1024))
+    tmp = 'tmp_demo.bmp'
+    with open(tmp, 'wb') as f:
+        f.write(header + body)
 
-    res = analyze_block_stats(cipher_block, autocorr_d=1)
-    import pprint
-    pprint.pprint(res)
+    out = 'tmp_demo_ecb.bmp'
+    encrypt_bmp24_ecb(tmp, out, key, analyze_after=True)
 
-    # если хотите — можно протестировать весь файл/тело BMP поблочно, аккумулируя
-    # тесты по блокам или объединяя несколько блоков в одну длинную последовательность.
+    # можно также проверить OFB
+    out_ofb = 'tmp_demo_ofb.bmp'
+    iv = bytes(random.getrandbits(8) for _ in range(BLOCK_SIZE))
+    encrypt_bmp24_ofb(tmp, out_ofb, key, iv, analyze_after=True)
+
+    # очистка
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
