@@ -4,7 +4,7 @@ from collections import Counter
 import matplotlib.pyplot as plt
 
 M = 26
-ENGLISH_FREQ_ORDER = "ETAONISRHLDCUPFMWYBGVKQXJZ"
+ENGLISH_FREQ_ORDER = "ETAOINSHRDLCUMWFGYPBVKJXQZ"
 ENGLISH_FREQ = {
     'A': 8.05, 'B': 1.62, 'C': 3.20, 'D': 3.65, 'E': 12.31, 'F': 2.28, 'G': 1.61, 'H': 5.14,
     'I': 7.18, 'J': 0.10, 'K': 0.52, 'L': 4.03, 'M': 2.25, 'N': 7.19, 'O': 7.94, 'P': 2.29,
@@ -70,11 +70,13 @@ def plot_frequencies(freq: dict[str, float], title="Frequency Histogram"):
     plt.xlabel("Letter")
     plt.ylabel("Frequency (%)")
     plt.tight_layout()
-    plt.savefig(f"{title.replace(' ', '_')}.png") 
+    plt.savefig(f"{title.replace(' ', '_')}.png")  # сохраняем в файл
 
 def frequency_decrypt(cipher: str) -> str:
     freq_cipher = count_frequencies(cipher)
+    # Сортируем буквы шифра по частоте
     sorted_cipher = sorted(freq_cipher, key=lambda ch: freq_cipher[ch], reverse=True)
+    # Сопоставляем с таблицей английских частот
     mapping = {enc: dec for enc, dec in zip(sorted_cipher, ENGLISH_FREQ_ORDER)}
     return ''.join(mapping.get(ch, ch) for ch in cipher)
 
@@ -85,25 +87,45 @@ def compare_texts(original: str, decrypted: str) -> float:
     errors = sum(o[i] != d[i] for i in range(total))
     return (errors / total) * 100 if total else 0
 
+import csv 
+def load_top_words(filename: str, top_n: int) -> list[str]:
+    words = [] 
+    with open(filename, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for i, row in enumerate(reader):
+            if i >= top_n:
+                break
+            word = row['word'].upper()
+            words.append(word)
+    return words
+
+
 if __name__ == "__main__":
-    text = "HELLO WORLD THIS IS RANDOM TEXT OF YOU MUST HAVE EVER BEEN SEEN CIRCUS YES OH NO MAYBE WHAT TEXT" 
-    print(f"text: {text}")
+    error_rates = []
+    for i in range(333333, 333334):
+        text = " ".join(load_top_words("unigram_freq.csv", i))
+        # print(f"text: {text}")
 
-    key = generate_key()
-    print(f"Generated key: {key}")
+        key = generate_key()
+        print(f"Generated key: {key}")
 
-    encrypted = encrypt(text, key)
-    decrypted_true = decrypt(encrypted, key)
+        encrypted = encrypt(text, key)
+        decrypted_true = decrypt(encrypted, key)
 
-    print("\nEncrypted:\n", encrypted)
-    freq = count_frequencies(encrypted)
-    print("\nFrequencies:", freq)
+        # print("\nEncrypted:\n", encrypted)
+        freq = count_frequencies(encrypted)
+        print("\nFrequencies:", freq)
 
-    plot_frequencies(freq, "Encrypted Text Frequencies")
+        plot_frequencies(freq, "Encrypted Text Frequencies")
 
-    guessed = frequency_decrypt(encrypted)
-    print("\nGuessed (frequency) decryption:\n", guessed)
+        guessed = frequency_decrypt(encrypted)
+        # print("\nGuessed (frequency) decryption:\n", guessed)
 
-    error = compare_texts(text, guessed)
-    print(f"\nError rate: {error:.2f}%")
-    print("\n(True decrypted for reference):\n", decrypted_true)
+        error = compare_texts(text, guessed)
+        print(f"\nError rate: {error:.2f}%")
+        error_rates.append(error)
+        # print("\n(True decrypted for reference):\n", decrypted_true)
+
+    print(error_rates)
+
+    print(min(error_rates))

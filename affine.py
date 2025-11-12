@@ -24,7 +24,6 @@ def encrypt(text: str, key: tuple[int, int]) -> str:
     return ''.join(result)
 
 def mod_inverse(a: int, m: int) -> int: 
-    # расширенный алгоритм евлкида
     a = a % m 
     for x in range(1, m):
         if (a * x) % m == 1:
@@ -48,7 +47,7 @@ if __name__ == "__main__":
     key = generate_key()
     print(f"Generated key: {key}")
 
-    text = "Hello, Affine Cipher!"
+    text = input("Enter text: ")
     encrypted = encrypt(text, key)
     decrypted = decrypt(encrypted, key)
 
