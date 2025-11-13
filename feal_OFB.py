@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
 from typing import Tuple
-from PIL import Image  # pip install pillow
+from PIL import Image 
 import random
 import os
 
@@ -98,7 +97,6 @@ def feal_decrypt_block(block: bytes, key: bytes) -> bytes:
     plain = L + R
     return plain
 
-# ------------------ ECB (ваше) ------------------
 def ecb_encrypt_stream(plaintext: bytes, key: bytes) -> bytes:
     padded = pkcs7_pad(plaintext, BLOCK_SIZE)
     out = bytearray()
@@ -116,11 +114,7 @@ def ecb_decrypt_stream(ciphertext: bytes, key: bytes) -> bytes:
         out.extend(feal_decrypt_block(block, key))
     return pkcs7_unpad(bytes(out), BLOCK_SIZE)
 
-# ------------------ OFB (новое) ------------------
 def ofb_keystream_generator(key: bytes, iv: bytes):
-    """Генератор потоковых блоков keystream длиной BLOCK_SIZE.
-       Каждый следующий блок = E_k(prev_output). Начальное prev_output = IV.
-    """
     if len(iv) != BLOCK_SIZE:
         raise ValueError("IV должен быть размера блока (8 байт).")
     prev = iv
@@ -130,10 +124,8 @@ def ofb_keystream_generator(key: bytes, iv: bytes):
         prev = out
 
 def ofb_encrypt_stream(plaintext: bytes, key: bytes, iv: bytes) -> bytes:
-    # OFB — потоковый; шифруем plaintext длины N: получаем keystream и XOR побайтно (без паддинга как правило).
     ks_gen = ofb_keystream_generator(key, iv)
     out = bytearray()
-    # no PKCS7 padding needed for OFB (потоковый режим). Но если нужно сохранять кратность — можно.
     for i in range(0, len(plaintext), BLOCK_SIZE):
         block = plaintext[i:i+BLOCK_SIZE]
         ks = next(ks_gen)
@@ -142,10 +134,8 @@ def ofb_encrypt_stream(plaintext: bytes, key: bytes, iv: bytes) -> bytes:
     return bytes(out)
 
 def ofb_decrypt_stream(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
-    # DECRYPT == ENCRYPT в OFB
     return ofb_encrypt_stream(ciphertext, key, iv)
 
-# ------------------ Файловые обёртки для BMP24 ------------------
 BMP_HEADER_SIZE = 54
 
 def encrypt_bmp24_ecb(in_path: str, out_path: str, key: bytes):
@@ -199,19 +189,13 @@ def decrypt_bmp24_ofb(in_path: str, out_path: str, key: bytes, iv: bytes):
 
 # ------------------ Эксперимент: изменить 1 пиксель в зашифрованном BMP и посчитать эффект ------------------
 def flip_pixel_in_cipher_bmp(cipher_path: str, out_path: str, pixel_index: int, image_width: int):
-    """Изменить один пиксель (RGB, 3 байта) в теле BMP24 файла.
-       pixel_index — порядковый номер пикселя (начиная с 0 от верхнего левого).
-       image_width — ширина изображения в пикселях (нужна, чтобы корректно учитывать выравнивание строк BMP).
-    """
-    # читаем
     with open(cipher_path, "rb") as f:
         all_data = bytearray(f.read())
     if len(all_data) < BMP_HEADER_SIZE:
         raise ValueError("Файл слишком мал, чтобы быть BMP.")
     header = all_data[:BMP_HEADER_SIZE]
     body = all_data[BMP_HEADER_SIZE:]
-    # BMP24 имеет выравнивание строк (padding до кратности 4 байтам).
-    # Чтобы корректно индексировать пиксели, лучше использовать PIL — ниже упрощённый подход: откроем через PIL и модифицируем байты.
+
     img = Image.open(cipher_path)
     if img.mode != "RGB":
         img = img.convert("RGB")
@@ -222,16 +206,12 @@ def flip_pixel_in_cipher_bmp(cipher_path: str, out_path: str, pixel_index: int, 
     y = pixel_index // w
     pixels = img.load()
     r,g,b = pixels[x,y]
-    # изменим значение (например, инвертировать R)
+
     pixels[x,y] = ((r ^ 0xFF) & 0xFF, g, b)
     img.save(out_path)
     print(f"Изменён пиксель {pixel_index} в {out_path}")
 
 def flip_line_in_cipher_bmp(cipher_path: str, out_path: str, line_index: int, image_width: int, image_height: int):
-    """Изменяет одну горизонтальную линию пикселей (все пиксели строки) в зашифрованном BMP24.
-       line_index — номер строки (0 = верхняя строка).
-       Работает напрямую с байтами, не через PIL.
-    """
     with open(cipher_path, "rb") as f:
         data = bytearray(f.read())
 
@@ -241,19 +221,16 @@ def flip_line_in_cipher_bmp(cipher_path: str, out_path: str, line_index: int, im
     header = data[:BMP_HEADER_SIZE]
     body = data[BMP_HEADER_SIZE:]
 
-    # BMP24 хранит строки снизу вверх! нужно перевернуть индекс
     row_bytes = ((image_width * 3 + 3) // 4) * 4
     if line_index < 0 or line_index >= image_height:
         raise ValueError("line_index вне диапазона.")
 
-    # корректный индекс с учётом переворота BMP
     real_y = (image_height - 1) - line_index
     offset = real_y * row_bytes
 
     if offset + row_bytes > len(body):
         raise ValueError("Строка выходит за пределы тела BMP.")
 
-    # Инвертируем все байты строки
     for i in range(offset, offset + row_bytes):
         body[i] ^= 0xFF
 
@@ -263,7 +240,6 @@ def flip_line_in_cipher_bmp(cipher_path: str, out_path: str, line_index: int, im
     print(f"Изменена линия {line_index} в {out_path}")
 
 def count_different_pixels(img_path1: str, img_path2: str) -> int:
-    """Считает число пикселей, у которых RGB !=."""
     a = Image.open(img_path1).convert("RGB")
     b = Image.open(img_path2).convert("RGB")
     if a.size != b.size:
@@ -278,13 +254,7 @@ def count_different_pixels(img_path1: str, img_path2: str) -> int:
                 cnt += 1
     return cnt
 
-# Утилита для проведения полного эксперимента и подсчёта
 def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel_to_flip: int, image_width: int):
-    """
-    1) Зашифровать исходный BMP в ECB и OFB.
-    2) В каждом шифртексте изменить 1 пиксель.
-    3) Расшифровать модифицированные шифртексты и посчитать число отличающихся пикселей по отношению к оригиналу.
-    """
     base, ext = os.path.splitext(original_bmp)
     ecb_cipher = base + "_ecb_cipher.bmp"
     ofb_cipher = base + "_ofb_cipher.bmp"
@@ -295,11 +265,9 @@ def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel
     ecb_decrypted_clean = base + "_ecb_decrypted_clean.bmp"
     ofb_decrypted_clean = base + "_ofb_decrypted_clean.bmp"
 
-    # 1) шифруем
     encrypt_bmp24_ecb(original_bmp, ecb_cipher, key)
     encrypt_bmp24_ofb(original_bmp, ofb_cipher, key, iv)
 
-    # 2) портим один пиксель в шифртексте -> сохраним как corrupted
     image = Image.open(original_bmp)
     width, height = image.size
     line_to_flip = height // 2
@@ -311,18 +279,15 @@ def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel
     # flip_pixel_in_cipher_bmp(ecb_cipher, ecb_corrupted, pixel_to_flip, image_width)
     # flip_pixel_in_cipher_bmp(ofb_cipher, ofb_corrupted, pixel_to_flip, image_width)
 
-    # 3) дешифруем corrupted
-
     try:
         decrypt_bmp24_ecb(ecb_corrupted, ecb_decrypted, key)
     except ValueError as e:
         print("Предупреждение: ошибка паддинга при дешифровке ECB (ожидаемо). Попробуем сохранить без паддинга.")
-        # Попробуем расшифровать без проверки паддинга
         with open(ecb_corrupted, "rb") as f:
             all_data = f.read()
         header = all_data[:BMP_HEADER_SIZE]
         body = all_data[BMP_HEADER_SIZE:]
-        # вручную дешифруем блоки без pkcs7_unpad
+
         out = bytearray()
         for i in range(0, len(body), BLOCK_SIZE):
             block = body[i:i+BLOCK_SIZE]
@@ -333,18 +298,16 @@ def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel
             f.write(header + bytes(out))
     decrypt_bmp24_ofb(ofb_corrupted, ofb_decrypted, key, iv)
 
-    # также дешифруем чистые шифртексты, чтобы иметь базу (проверка корректности)
-
     try:
         decrypt_bmp24_ecb(ecb_cipher, ecb_decrypted_clean, key)
     except ValueError as e:
         print("Предупреждение: ошибка паддинга при дешифровке ECB (ожидаемо). Попробуем сохранить без паддинга.")
-        # Попробуем расшифровать без проверки паддинга
+
         with open(ecb_cipher, "rb") as f:
             all_data = f.read()
         header = all_data[:BMP_HEADER_SIZE]
         body = all_data[BMP_HEADER_SIZE:]
-        # вручную дешифруем блоки без pkcs7_unpad
+
         out = bytearray()
         for i in range(0, len(body), BLOCK_SIZE):
             block = body[i:i+BLOCK_SIZE]
@@ -355,7 +318,6 @@ def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel
             f.write(header + bytes(out))
     decrypt_bmp24_ofb(ofb_cipher, ofb_decrypted_clean, key, iv)
 
-    # подсчёт отличающихся пикселей
     diff_ecb = count_different_pixels(original_bmp, ecb_decrypted)
     diff_ofb = count_different_pixels(original_bmp, ofb_decrypted)
 
@@ -374,7 +336,6 @@ def experiment_error_propagation(original_bmp: str, key: bytes, iv: bytes, pixel
         "diff_ofb": diff_ofb,
     }
 
-# ------------------ parsing/interactive небольшие хелперы ------------------
 def parse_hex_key(s: str) -> bytes:
     s = s.strip()
     if len(s) != 16:
