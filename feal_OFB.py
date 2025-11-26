@@ -51,7 +51,7 @@ def feal_round_function(x_bytes: bytes, k_bytes: bytes) -> bytes:
 
     return bytes([r0, r1, r2, r3])
 
-def key_schedule(key: bytes, rounds: int = 4) -> list:
+def key_schedule(key: bytes, rounds: int = 16) -> list:
     if len(key) != 8:
         raise ValueError("Ключ должен быть 8 байт (64 бита) для этой реализации.")
     k = list(key)
@@ -70,7 +70,7 @@ def key_schedule(key: bytes, rounds: int = 4) -> list:
 def feal_encrypt_block(block: bytes, key: bytes) -> bytes:
     if len(block) != BLOCK_SIZE:
         raise ValueError("Блок должен быть 8 байт.")
-    subkeys = key_schedule(key, rounds=4)
+    subkeys = key_schedule(key, rounds=16)
     
     L = block[:4]
     R = block[4:]
@@ -85,7 +85,7 @@ def feal_encrypt_block(block: bytes, key: bytes) -> bytes:
 def feal_decrypt_block(block: bytes, key: bytes) -> bytes:
     if len(block) != BLOCK_SIZE:
         raise ValueError("Блок должен быть 8 байт.")
-    subkeys = key_schedule(key, rounds=4)
+    subkeys = key_schedule(key, rounds=16)
     
     R = block[:4]
     L = block[4:]
