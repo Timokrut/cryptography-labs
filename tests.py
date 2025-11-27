@@ -171,6 +171,64 @@ def autocorrelation_test(bits, d):
     X5 = 2 * (A - (n - d) / 2)**2 / (n - d)
     return X5
 
+import math
+
+def reshape_channel(flat, W=900, H=900):
+    return [flat[i*W:(i+1)*W] for i in range(H)]
+
+def correlation_channel(A, B, W=900, H=900):
+    A = reshape_channel(A)
+    B = reshape_channel(B)
+
+    # Средние значения
+    sumA = sumB = 0
+    for i in range(H):
+        for j in range(W):
+            sumA += A[i][j]
+            sumB += B[i][j]
+
+    MA = sumA / (W * H)
+    MB = sumB / (W * H)
+
+    # дисперсии
+    varA = 0
+    varB = 0
+    cov = 0
+
+    for i in range(H):
+        for j in range(W):
+            a = A[i][j] - MA
+            b = B[i][j] - MB
+            varA += a * a
+            varB += b * b
+            cov += a * b
+
+    # sigma
+    sigmaA = math.sqrt(varA / (W * H - 1))
+    sigmaB = math.sqrt(varB / (W * H - 1))
+
+    # Числитель корреляции
+    M_cov = cov / (W * H)
+
+    # Корреляция
+    r = M_cov / (sigmaA * sigmaB)
+
+    return r
+
+def correlation_rgb(imgA_pixels, imgB_pixels):
+    R_A = [px[0] for px in imgA_pixels]
+    G_A = [px[1] for px in imgA_pixels]
+    B_A = [px[2] for px in imgA_pixels]
+
+    R_B = [px[0] for px in imgB_pixels]
+    G_B = [px[1] for px in imgB_pixels]
+    B_B = [px[2] for px in imgB_pixels]
+
+    return {
+        "R": correlation_channel(R_A, R_B),
+        "G": correlation_channel(G_A, G_B),
+        "B": correlation_channel(B_A, B_B),
+    }
 def evaluate_result(value, crit, alpha, invert=False):
     if invert:
         if value < crit:
@@ -218,6 +276,7 @@ def run_all_tests(data: bytes):
         print("X4: недостаточно данных")
 
     # X5 — автокорреляция (df=1)
+    print('Автокорреляционный тест')
     for d in [1, 4, 8]:
         if len(bits) > d:
             X5 = autocorrelation_test(bits, d)
@@ -225,4 +284,3 @@ def run_all_tests(data: bytes):
             eval_res = evaluate_result(X5, chi2_info["crit"], chi2_info["alpha"])
             print(f"X5(d={d}): {X5:.6f}, df={chi2_info['df']}, alpha={chi2_info['alpha']}, crit={chi2_info['crit']:.4f} -> {eval_res}")
 
-    print("=========================================")

@@ -1,22 +1,25 @@
-from PIL import Image
 import os
 
 from feal_OFB import (
-    encrypt_bmp24_ecb,
-    decrypt_bmp24_ecb,
     encrypt_bmp24_ofb,
-    decrypt_bmp24_ofb,
     parse_hex_key,
-    random_iv,
-    count_different_pixels
 )
 
-from tests import run_all_tests
+from tests import run_all_tests, correlation_rgb
+
+def bytes_to_pixels(data):
+    pixels = []
+    length = len(data) - (len(data) % 3)
+    for i in range(0, length, 3):
+        b = data[i]
+        g = data[i+1]
+        r = data[i+2]
+        pixels.append((r, g, b))
+    return pixels
 
 def test_ecb_ofb_with_stats(BMP="image2.bmp"):
     key = parse_hex_key("0011223344556677")
     iv = bytes.fromhex("aea8c551376fc6e0")
-    # iv = random_iv()
 
     base, ext = os.path.splitext(BMP)
 
@@ -27,38 +30,23 @@ def test_ecb_ofb_with_stats(BMP="image2.bmp"):
         "ofb_dec": f"{base}_ofb_decrypted.bmp",
     }
 
-    print("\n=== ШИФРОВАНИЕ ECB ===")
-    # encrypt_bmp24_ecb(BMP, paths["ecb_enc"], key)
-    # decrypt_bmp24_ecb(paths["ecb_enc"], paths["ecb_dec"], key)
-
-    print("\n=== ШИФРОВАНИЕ OFB ===")
-    # encrypt_bmp24_ofb(BMP, paths["ofb_enc"], key, iv)
-    # decrypt_bmp24_ofb(paths["ofb_enc"], paths["ofb_dec"], key, iv)
-
-    # ============================================================
-    #                       ЧТЕНИЕ ШИФРОТЕКСТОВ
-    # ============================================================
-
-    print("\n=== ЧТЕНИЕ ШИФРОТЕКСТОВ ===")
-    with open(paths["ecb_enc"], "rb") as f:
-        ecb_bytes = f.read()[54:]
+    print("Шифрование")
+    encrypt_bmp24_ofb(BMP, paths["ofb_enc"], key, iv)
 
     with open(paths["ofb_enc"], "rb") as f:
         ofb_bytes = f.read()[54:]
 
-    # ============================================================
-    #                СТАТИСТИЧЕСКИЕ ТЕСТЫ X1–X5
-    # ============================================================
+    with open('image2.bmp', "rb") as f:
+        orig_bytes = f.read()[54:]
 
-    print("\n\n==================================================")
-    print("====   СТАТИСТИКА ДЛЯ ECB-ШИФРОТЕКСТА   ====")
-    print("==================================================")
-    run_all_tests(ecb_bytes)
+    pixels_ofb = bytes_to_pixels(ofb_bytes)
+    pixels_orig = bytes_to_pixels(orig_bytes)
 
-    print("\n==================================================")
-    print("====   СТАТИСТИКА ДЛЯ OFB-ШИФРОТЕКСТА   ====")
-    print("==================================================")
-    run_all_tests(ofb_bytes)
+    corr = correlation_rgb(pixels_orig, pixels_ofb)
+    print(corr)
+    
+    # print("Статистические тесты")
+    # run_all_tests(ofb_bytes)
 
     return paths
 
