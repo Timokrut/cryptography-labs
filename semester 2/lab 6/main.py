@@ -1,9 +1,10 @@
 import random
-from math import gcd
 
-# ------------------------------------------------
-# ПРЕОБРАЗОВАНИЕ ТЕКСТА
-# ------------------------------------------------
+def gcd(a, b):
+    while b != 0:
+        a, b = b, a % b
+
+    return a
 
 def text_to_bits(text):
     bits = []
@@ -19,52 +20,36 @@ def bits_to_text(bits):
         byte = bits[i:i+8]
         byte_str = ''.join(str(x) for x in byte)
         text += chr(int(byte_str, 2))
-
     return text
-
-# ------------------------------------------------
-# XOR
-# ------------------------------------------------
 
 def xor_bits(a, b):
     return [x ^ y for x, y in zip(a, b)]
 
-# ------------------------------------------------
-# ГЕНЕРАЦИЯ КЛЮЧЕЙ
-# ------------------------------------------------
-
 def generate_keys():
-
+    # Два простых числа
     # p ≡ q ≡ 3 (mod 4)
     p = 499
     q = 547
 
     n = p * q
-
     return n, (p, q)
 
-# ------------------------------------------------
-# ШИФРОВАНИЕ
-# ------------------------------------------------
-
 def encrypt(message, n):
-
     m_bits = text_to_bits(message)
     t = len(m_bits)
 
-    # выбираем x0
+    # выбираем случайныый x0
     while True:
         x0 = random.randint(2, n - 1)
-        if gcd(x0, n) == 1:
+        if gcd(x0, n) == 1: # -> взаимно простое
             break
 
     x = x0
     gamma = []
 
+    # генерация потока с помощью генератора Блюма-Блюма-Шуба (BBS)
     for _ in range(t):
-
         x = pow(x, 2, n)
-
         # младший бит
         gamma.append(x % 2)
 
@@ -72,63 +57,49 @@ def encrypt(message, n):
 
     return cipher_bits, x
 
-# ------------------------------------------------
-# РАСШИФРОВАНИЕ
-# ------------------------------------------------
-
 def decrypt(cipher_bits, xt, private_key):
-
     p, q = private_key
-
     n = p * q
-
     t = len(cipher_bits)
 
     # степени
     ap = pow((p + 1) // 4, t, p - 1)
     aq = pow((q + 1) // 4, t, q - 1)
 
-    # восстановление x0
+    # восстанавливаем остатки x0 по модулю p / q
     rp = pow(xt, ap, p)
     rq = pow(xt, aq, q)
 
-    # CRT
+    # КТО
     yp = pow(q, -1, p)
     yq = pow(p, -1, q)
 
+    # восстанавливаем x0
     x0 = (rp * q * yp + rq * p * yq) % n
 
-    # генерация потока заново
+    # заново генирируем поток
     x = x0
     gamma = []
 
     for _ in range(t):
-
         x = pow(x, 2, n)
-
         gamma.append(x % 2)
 
     message_bits = xor_bits(cipher_bits, gamma)
 
     return bits_to_text(message_bits)
 
-# ------------------------------------------------
-# MAIN
-# ------------------------------------------------
+if __name__ == "__main__":
+    public_key, private_key = generate_keys()
+    print("PK:", public_key)
+    print("SK:", private_key)
 
-public_key, private_key = generate_keys()
+    message = "HELLO"
+    print("Исходное сообщение:", message)
 
-message = "HELLO"
+    cipher_bits, xt = encrypt(message, public_key)
+    print("Шифртекст:", ''.join(str(x) for x in cipher_bits))
+    print("xt =", xt)
 
-print("Исходное сообщение:", message)
-
-cipher_bits, xt = encrypt(message, public_key)
-
-cipher_string = ''.join(str(x) for x in cipher_bits)
-
-print("Шифртекст:", cipher_string)
-print("xt =", xt)
-
-decrypted = decrypt(cipher_bits, xt, private_key)
-
-print("Расшифрованное сообщение:", decrypted)
+    decrypted = decrypt(cipher_bits, xt, private_key)
+    print("Расшифрованное сообщение:", decrypted)
